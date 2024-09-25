@@ -66,7 +66,7 @@ def get_tokens():
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
         "Referer": "https://www.naukri.com/",
-        "Accept-Encoding": "gzip, deflate, br",
+        # "Accept-Encoding": "gzip, deflate, br",
         "Priority": "u=1, i",
     }
 
