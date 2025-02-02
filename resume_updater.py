@@ -46,6 +46,7 @@ if not Path(RESUME_PATH).exists():
 
 
 def get_tokens():
+    logger.info("geting token started")
     url = "https://www.naukri.com/central-login-services/v1/login"
     headers = {
         "Host": "www.naukri.com",
@@ -100,11 +101,14 @@ def get_tokens():
     if response.status_code == 200:
         logger.info("got tokens")
         response = response.json()
+        
         return {cookie["name"]: cookie["value"] for cookie in response["cookies"]}
+    logger.info("unable to get token")
     return {}
 
 
 def vaildate_file():
+    logger.info("file validation is started")
     file_path = RESUME_PATH
     file_name = os.path.basename(file_path)
 
@@ -210,4 +214,6 @@ def main():
     logger.info("Update file response %s", response.text)
 
 
-main()
+
+if __name__ == "__main__":
+    main()
