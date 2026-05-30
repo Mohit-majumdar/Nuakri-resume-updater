@@ -5,6 +5,7 @@
 ## Configration 
 - just need to add your Naukri username ,password and resume path
 - run ```python resume_updater.py ```
+- If a server login returns MFA, login once in a browser and pass the approved Naukri cookies with `NAUKRI_COOKIE_HEADER` or add an `[auth]` `CookieHeader` value in `config_properties.conf`.
 
 ## Things you can do now
 -  run on add-hock bases

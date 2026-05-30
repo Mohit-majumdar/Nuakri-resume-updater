@@ -47,12 +47,95 @@ if not Path(RESUME_PATH).exists():
     sys.exit(1)
 
 
+def parse_cookie_header(cookie_header):
+    cookies = {}
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if name and value:
+            cookies[name] = value
+    return cookies
+
+
+def get_configured_tokens():
+    cookie_header = os.getenv("NAUKRI_COOKIE_HEADER", "").strip()
+    if not cookie_header:
+        cookie_header = parser.get("auth", "CookieHeader", fallback="").strip()
+
+    tokens = parse_cookie_header(cookie_header) if cookie_header else {}
+
+    token_options = {
+        "nauk_at": ("NAUKRI_NAUK_AT", "NaukAt"),
+        "nauk_rt": ("NAUKRI_NAUK_RT", "NaukRt"),
+        "nauk_sid": ("NAUKRI_NAUK_SID", "NaukSid"),
+        "nauk_otl": ("NAUKRI_NAUK_OTL", "NaukOtl"),
+        "NKWAP": ("NAUKRI_NKWAP", "Nkwap"),
+    }
+    for cookie_name, (env_name, config_name) in token_options.items():
+        value = os.getenv(env_name, "").strip()
+        if not value:
+            value = parser.get("auth", config_name, fallback="").strip()
+        if value:
+            tokens[cookie_name] = value
+
+    if tokens.get("nauk_at"):
+        logger.info("using configured Naukri session cookies")
+        return tokens
+
+    if tokens:
+        logger.warning("configured Naukri cookies do not include nauk_at")
+    return {}
+
+
+def log_login_failure(response):
+    try:
+        payload = response.json()
+    except ValueError:
+        logger.error(
+            "unable to get token status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
+        return
+
+    validation_errors = payload.get("validationErrors", [])
+    is_mfa_required = payload.get("message") == "MFA required" or any(
+        error.get("customErrorCode") == 403015 for error in validation_errors
+    )
+
+    if is_mfa_required:
+        data = payload.get("data", {})
+        logger.error(
+            "Naukri login requires MFA for this machine/IP. medium=%s flowId=%s email=%s mobile=%s",
+            data.get("medium"),
+            data.get("flowId"),
+            data.get("email"),
+            data.get("mobile"),
+        )
+        logger.error(
+            "Complete login once from that server, or configure NAUKRI_COOKIE_HEADER/auth CookieHeader with browser cookies from an MFA-approved session."
+        )
+        return
+
+    logger.error(
+        "unable to get token status=%s body=%s",
+        response.status_code,
+        payload,
+    )
+
+
 def get_tokens():
     logger.info("geting token started")
+    configured_tokens = get_configured_tokens()
+    if configured_tokens:
+        return configured_tokens
+
     url = "https://www.naukri.com/central-login-services/v1/login"
     headers = {
         "Host": "www.naukri.com",
-        "Content-Length": "66",
         "Sec-Ch-Ua": '"Not/A)Brand";v="8", "Chromium";v="126"',
         "Accept-Language": "en-US",
         "Sec-Ch-Ua-Mobile": "?0",
@@ -105,7 +188,7 @@ def get_tokens():
         response = response.json()
 
         return {cookie["name"]: cookie["value"] for cookie in response["cookies"]}
-    logger.info("unable to get token res: %s", response)
+    log_login_failure(response)
     return {}
 
 
@@ -240,6 +323,7 @@ def main():
         "_ga_K2YBNZVRLL": "GS1.1.1727174886.4.1.1727174911.35.0.0",
         # "bm_sv": "BB6D3F3616C03E0936DD924E14F93513~YAAQDfQwF37FP9aRAQAAGA2mIxkCCBb3bZ19mxvSWwbOdcQ0gUjMYyOKcv+fpn3oXslNjLAD+r4ib+t9py+07Fjp0SFjmFNPoG8/Pygcv4iWIw+g3lmwWaS+txFXkrm0uw4+XZ4z4pgqAEp2S6yPFCtm0mZ3WtMuFTuJClrwfSGg9X4ofwMVmJzwebSONZNLWUU/s5p8llY3ZIktKu1E5hv1SAAcoBV1bCAkhhPrzA9DtFVEvSL+C90NM+vF4J5M1A==~1",
     }
+    cookies.update({name: value for name, value in tokens.items() if value})
     headers = {
         "Host": "www.naukri.com",
         # 'Content-Length': '87',
