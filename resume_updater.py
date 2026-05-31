@@ -210,20 +210,19 @@ def get_tokens_from_mfa_prompt(mfa_data, login_cookies=None):
 
     if user_input.isdigit():
         flow_id = mfa_data.get("flowId")
+        username = mfa_data.get("username") or USERNAME
         if not flow_id:
             logger.error("MFA response did not include flowId")
             return {}
-        return verify_mfa_otp(USERNAME, flow_id, user_input, cookies=login_cookies)
+        return verify_mfa_otp(username, flow_id, user_input, cookies=login_cookies)
 
     logger.warning("input was not an OTP and does not include nauk_at; retrying password login")
     return {}
 
 
-def mfa_cookies_from_response(response):
-    cookies = response.cookies.get_dict()
-    t_ds = cookies.get("_t_ds")
-    if t_ds:
-        cookies["_t_ds"] = t_ds
+def mfa_cookies_from_response(base_cookies, response):
+    cookies = dict(base_cookies)
+    cookies.update(response.cookies.get_dict())
     return cookies
 
 
@@ -294,11 +293,11 @@ def get_tokens():
         if mfa_data is not None and attempt == 0:
             tokens = get_tokens_from_mfa_prompt(
                 mfa_data,
-                login_cookies=mfa_cookies_from_response(response),
+                login_cookies=mfa_cookies_from_response(cookies, response),
             )
             if tokens:
                 return tokens
-            continue
+            break
 
         log_login_failure(response, payload)
         break
