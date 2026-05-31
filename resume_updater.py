@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from logging import config
 from pathlib import Path
 from configparser import ConfigParser
+from getpass import getpass
 
 import requests
 
@@ -90,33 +91,61 @@ def get_configured_tokens():
     return {}
 
 
-def log_login_failure(response):
+def response_payload(response):
     try:
-        payload = response.json()
+        return response.json()
     except ValueError:
         logger.error(
             "unable to get token status=%s body=%s",
             response.status_code,
             response.text,
         )
-        return
+        return None
 
+
+def extract_login_tokens(payload):
+    if not isinstance(payload, Mapping):
+        return {}
+    cookies = payload.get("cookies", [])
+    if not isinstance(cookies, Sequence) or isinstance(cookies, str):
+        return {}
+    return {
+        cookie["name"]: cookie["value"]
+        for cookie in cookies
+        if isinstance(cookie, Mapping) and cookie.get("name") and cookie.get("value")
+    }
+
+
+def get_mfa_data(payload):
+    if not isinstance(payload, Mapping):
+        return None
     validation_errors = payload.get("validationErrors", [])
     is_mfa_required = payload.get("message") == "MFA required" or any(
         error.get("customErrorCode") == 403015 for error in validation_errors
     )
+    if not is_mfa_required:
+        return None
+    data = payload.get("data", {})
+    return data if isinstance(data, Mapping) else {}
 
-    if is_mfa_required:
-        data = payload.get("data", {})
+
+def log_login_failure(response, payload=None):
+    if payload is None:
+        payload = response_payload(response)
+    if payload is None:
+        return
+
+    mfa_data = get_mfa_data(payload)
+    if mfa_data is not None:
         logger.error(
             "Naukri login requires MFA for this machine/IP. medium=%s flowId=%s email=%s mobile=%s",
-            data.get("medium"),
-            data.get("flowId"),
-            data.get("email"),
-            data.get("mobile"),
+            mfa_data.get("medium"),
+            mfa_data.get("flowId"),
+            mfa_data.get("email"),
+            mfa_data.get("mobile"),
         )
         logger.error(
-            "Complete login once from that server, or configure NAUKRI_COOKIE_HEADER/auth CookieHeader with browser cookies from an MFA-approved session."
+            "Complete login once in a browser, or configure NAUKRI_COOKIE_HEADER/auth CookieHeader with browser cookies from an MFA-approved session."
         )
         return
 
@@ -125,6 +154,33 @@ def log_login_failure(response):
         response.status_code,
         payload,
     )
+
+
+def get_tokens_from_mfa_prompt(mfa_data):
+    if not sys.stdin.isatty():
+        logger.error("MFA prompt requires an interactive terminal")
+        return {}
+
+    print()
+    print("Naukri requires MFA for this login.")
+    print(f"Medium: {mfa_data.get('medium')}")
+    print(f"Email: {mfa_data.get('email')}")
+    print(f"Mobile: {mfa_data.get('mobile')}")
+    print()
+    print("Complete the OTP challenge in your browser for this account/IP, then press Enter.")
+    print("Or paste the browser Cookie header here if you already have an approved session.")
+    cookie_header = getpass("Cookie header (optional, hidden): ").strip()
+
+    if not cookie_header:
+        return {}
+
+    tokens = parse_cookie_header(cookie_header)
+    if tokens.get("nauk_at"):
+        logger.info("using MFA-approved cookies from prompt")
+        return tokens
+
+    logger.warning("pasted Cookie header does not include nauk_at; retrying password login")
+    return {}
 
 
 def get_tokens():
@@ -181,14 +237,24 @@ def get_tokens():
         "password": PASSWORD,
     }
 
-    response = requests.post(url, headers=headers, cookies=cookies, json=data)
+    for attempt in range(2):
+        response = requests.post(url, headers=headers, cookies=cookies, json=data)
 
-    if response.status_code == 200:
-        logger.info("got tokens")
-        response = response.json()
+        payload = response_payload(response)
+        tokens = extract_login_tokens(payload)
+        if response.status_code == 200 and tokens.get("nauk_at"):
+            logger.info("got tokens")
+            return tokens
 
-        return {cookie["name"]: cookie["value"] for cookie in response["cookies"]}
-    log_login_failure(response)
+        mfa_data = get_mfa_data(payload)
+        if mfa_data is not None and attempt == 0:
+            tokens = get_tokens_from_mfa_prompt(mfa_data)
+            if tokens:
+                return tokens
+            continue
+
+        log_login_failure(response, payload)
+        break
     return {}
 
 
