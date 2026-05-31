@@ -156,7 +156,36 @@ def log_login_failure(response, payload=None):
     )
 
 
-def get_tokens_from_mfa_prompt(mfa_data):
+def verify_mfa_otp(username, flow_id, token, cookies=None):
+    url = "https://www.naukri.com/central-login-services/v0/otp-login"
+    headers = {
+        "Accept": "application/json",
+        "SystemId": "jobseeker",
+        "ClientId": "d3skt0p",
+        "AppId": "105",
+        "Content-Type": "application/json",
+        "Origin": "https://www.naukri.com",
+        "Referer": "https://www.naukri.com/nlogin/login",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.127 Safari/537.36",
+    }
+    data = {
+        "username": username,
+        "token": token,
+        "flowId": flow_id,
+    }
+
+    response = requests.post(url, headers=headers, cookies=cookies or {}, json=data)
+    payload = response_payload(response)
+    tokens = extract_login_tokens(payload)
+    if response.status_code == 200 and tokens.get("nauk_at"):
+        logger.info("MFA OTP verified")
+        return tokens
+
+    log_login_failure(response, payload)
+    return {}
+
+
+def get_tokens_from_mfa_prompt(mfa_data, login_cookies=None):
     if not sys.stdin.isatty():
         logger.error("MFA prompt requires an interactive terminal")
         return {}
@@ -167,20 +196,35 @@ def get_tokens_from_mfa_prompt(mfa_data):
     print(f"Email: {mfa_data.get('email')}")
     print(f"Mobile: {mfa_data.get('mobile')}")
     print()
-    print("Complete the OTP challenge in your browser for this account/IP, then press Enter.")
-    print("Or paste the browser Cookie header here if you already have an approved session.")
-    cookie_header = getpass("Cookie header (optional, hidden): ").strip()
+    print("Enter the 6-digit OTP from email/SMS.")
+    print("You can also paste an MFA-approved browser Cookie header instead.")
+    user_input = getpass("OTP or Cookie header (hidden): ").strip()
 
-    if not cookie_header:
+    if not user_input:
         return {}
 
-    tokens = parse_cookie_header(cookie_header)
+    tokens = parse_cookie_header(user_input)
     if tokens.get("nauk_at"):
         logger.info("using MFA-approved cookies from prompt")
         return tokens
 
-    logger.warning("pasted Cookie header does not include nauk_at; retrying password login")
+    if user_input.isdigit():
+        flow_id = mfa_data.get("flowId")
+        if not flow_id:
+            logger.error("MFA response did not include flowId")
+            return {}
+        return verify_mfa_otp(USERNAME, flow_id, user_input, cookies=login_cookies)
+
+    logger.warning("input was not an OTP and does not include nauk_at; retrying password login")
     return {}
+
+
+def mfa_cookies_from_response(response):
+    cookies = response.cookies.get_dict()
+    t_ds = cookies.get("_t_ds")
+    if t_ds:
+        cookies["_t_ds"] = t_ds
+    return cookies
 
 
 def get_tokens():
@@ -248,7 +292,10 @@ def get_tokens():
 
         mfa_data = get_mfa_data(payload)
         if mfa_data is not None and attempt == 0:
-            tokens = get_tokens_from_mfa_prompt(mfa_data)
+            tokens = get_tokens_from_mfa_prompt(
+                mfa_data,
+                login_cookies=mfa_cookies_from_response(response),
+            )
             if tokens:
                 return tokens
             continue
